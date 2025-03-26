@@ -30,6 +30,7 @@ services:
       - "${PWD}/plugins:/usr/local/airflow/plugins"
       - "${PWD}/requirements:/usr/local/airflow/requirements"
       - "${PWD}/startup_script:/usr/local/airflow/startup"
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8080:8080"
     command: local-runner

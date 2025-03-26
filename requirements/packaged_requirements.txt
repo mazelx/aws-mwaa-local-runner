@@ -1,0 +1,6 @@
+--find-links /usr/local/airflow/plugins
+--no-index
+--constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.3/constraints-3.11.txt"
+
+apache-airflow-providers-docker==3.14.0
+apache-airflow-providers-ssh

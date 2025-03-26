@@ -1,0 +1,23 @@
+[project]
+name = "aws-mwaa-local-runner"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "apache-airflow-providers-amazon[aiobotocore]==9.0.0",
+    "apache-airflow-providers-celery==3.8.3",
+    "apache-airflow-providers-common-sql==1.19.0",
+    "apache-airflow-providers-docker==3.14.0",
+    "apache-airflow-providers-fab==1.5.0",
+    "apache-airflow-providers-ftp==3.11.1",
+    "apache-airflow-providers-http==4.13.2",
+    "apache-airflow-providers-imap==3.7.0",
+    "apache-airflow-providers-postgres==5.13.1",
+    "apache-airflow-providers-smtp==1.8.0",
+    "apache-airflow-providers-sqlite==3.9.0",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"

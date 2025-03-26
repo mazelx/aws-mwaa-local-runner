@@ -1,3 +1,3 @@
 #!/bin/sh
-
-echo "Running sample startup script."
+echo "----> run startup script"
+docker build --rm -t sd-engine packages/engine
