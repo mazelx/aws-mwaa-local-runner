@@ -1,9 +1,18 @@
-from airflow import DAG
+from airflow.decorators import dag
 from airflow.providers.ssh.operators.ssh import SSHOperator
-from datetime import datetime, timedelta
-from airflow.models import Variable
-from airflow.models.param import Param
+from datetime import timedelta
+from airflow.utils.dates import days_ago
+from airflow.operators.python import PythonOperator
+from airflow.models import Variable, DagRun
+import requests
+import logging
 
+
+# LOGGING
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# VARIABLES
 default_args = {
     'owner': 'xavier',
     'depends_on_past': False,
@@ -15,150 +24,129 @@ default_args = {
 
 ENGINE_WORKING_DIR = '/home/ubuntu/sportsdynamics/app/engine/src'
 ENGINE_INPUT_DATA_DIR = '/home/ubuntu/sportsdynamics/app/engine/input_data'
+ACTIVATE_ENV_CMD  = f"cd {ENGINE_WORKING_DIR}/ECDO  && source ~/anaconda3/etc/profile.d/conda.sh && conda activate SD"
 
-# Retrieve S3 path from DAG argument or Airflow Variable
+API_URL = Variable.get(
+    "SD_API_URL", default_var="https://api.sportsdynamics.eu/graphql"
+)
+API_KEY = Variable.get("SD_API_KEY")
+S3_BUCKET = Variable.get("S3_BUCKET", default_var="assets-20200820085407743800000001")
 
-with DAG(
-    dag_id='run_pipeline_on_ec2',
+
+# FUNCTIONS
+def _parse_game_metadata(raw_game_metadata: dict) -> dict:
+    game_metadata = {}
+    game_metadata['game_id'] = raw_game_metadata['data']['game']['id']
+    game_metadata['game_name'] = raw_game_metadata['data']['game']['localClub']['name'] + raw_game_metadata['data']['game']['remoteClub']['name']
+    game_metadata['customer_id'] = raw_game_metadata['data']['game']['customer']['id']
+    game_metadata['customer_name'] = "SportsDynamics" # TODO : understand how to get the customer name (local mapping)
+    game_metadata['commandArgs'] = " ".join(raw_game_metadata['data']['game']['jobs'][0]['currentInputStore']['commandArgs'])
+    return game_metadata
+
+def _get_s3_path(command_args:dict) -> dict:
+    args_dict = {}
+    for i, elem in enumerate(command_args):
+        if elem.startswith('--'):
+            args_dict[elem[2:]] = command_args[i + 1]
+    return args_dict
+
+
+def _get_game_metadata(game_id: str) -> dict:
+    logger.info(f"Fetching metadata for game ID: {game_id}")
+    headers = {"x-sd-api-key": API_KEY, "Content-Type": "application/json"}
+    query = """query game($id: ID!) {
+        game(id: $id) {
+            id
+            customer {
+                id
+                name
+            }
+            localClub { name }
+            remoteClub { name }
+            jobs {
+                currentState
+                currentInputStore {
+                    assetStore
+                    commandArgs
+                }
+                currentOutputStore {
+                    assetStore
+                    taskArn
+                    taskMetadata
+                }
+            }
+        }
+    }"""
+    payload = {"query": query, "variables": {"id": game_id}}
+    logger.debug(f"Payload: {payload}")
+    logger.debug(f"Headers: {headers}")
+
+    try:
+        response = requests.request(
+            "POST",
+            API_URL,
+            headers=headers,
+            json=payload,  # Fixed missing variable
+        )
+        response.raise_for_status()
+        logger.info(f"Successfully fetched metadata for game ID: {game_id}")
+        return response.json()
+    except Exception as e:
+        logger.error(f"Error fetching metadata for game ID: {game_id} : {e}")
+        raise
+
+
+# DAG DEFINITION
+@dag(
+    dag_id='dag_engine',
     default_args=default_args,
     description='Run Engine pipeline on EC2 instance',
     schedule_interval=None,  # ou None si lancement manuel
-    start_date=datetime(2025, 1, 1),
+    start_date=days_ago(1),
     catchup=False, 
     tags=['pipeline', 'ec2', 'ssh'],
-    # todo schema validation (https://airflow.apache.org/docs/apache-airflow/2.10.1/core-concepts/params.html#json-schema-validation)
     params={
-        "dict_param": {"key": "value"},
-        "game_metadata": {
-            "cpu": "16384",
-            "tags": [],
-            "group": "family:engine",
-            "memory": "16384",
-            "taskArn": "arn:aws:ecs:eu-west-1:715329755018:task/skynet/79994a95c0eb4e08966f6c99be2b27be",
-            "version": 4,
-            "stopCode": "EssentialContainerExited",
-            "createdAt": "2025-04-21T08:25:12.083Z",
-            "overrides": {
-                "containerOverrides": [
-                {
-                    "name": "engine",
-                    "command": [
-                    "bin/engine/run-job-request.sh",
-                    "--game_id",
-                    "bab6ec2f-db53-4f7b-9031-e7d49f4738da",
-                    "--customer_id",
-                    "acc8d283-b7a0-412f-8daa-ae2e3ccdf08f",
-                    "--language",
-                    "EN",
-                    "--generate_dynamical_maps",
-                    "no",
-                    "--home_team_id",
-                    "286b1082-46aa-449f-9c6b-cf98f5435417",
-                    "--away_team_id",
-                    "79ad5c0c-4926-4105-8c0d-2118efd4c601",
-                    "--game_info_file",
-                    "metadata.json",
-                    "--home_team_color_rgb",
-                    "[1,0,0]",
-                    "--away_team_color_rgb",
-                    "[0,0,1]",
-                    "--ball_color_rgb",
-                    "[1,0,0.984313725490196]",
-                    "--tracking_file",
-                    "tracking.jsonl",
-                    "--event_file",
-                    "insights_35ce0ab7-17ff-4210-8ca1-70c65dfc6aaa.jsonl",
-                    "--retry",
-                    "no",
-                    "--s3_bucket_name",
-                    "assets-20200820085407743800000001",
-                    "--s3_input_path",
-                    "acc8d283-b7a0-412f-8daa-ae2e3ccdf08f/bab6ec2f-db53-4f7b-9031-e7d49f4738da/input",
-                    "--s3_output_path",
-                    "acc8d283-b7a0-412f-8daa-ae2e3ccdf08f/bab6ec2f-db53-4f7b-9031-e7d49f4738da/output"
-                    ]
-                }
-                ],
-                "inferenceAcceleratorOverrides": []
-            },
-            "startedAt": "2025-04-21T08:25:21.073Z",
-            "stoppedAt": "2025-04-21T08:53:13.754Z",
-            "attributes": [
-                {
-                "name": "ecs.cpu-architecture",
-                "value": "arm64"
-                }
-            ],
-            "clusterArn": "arn:aws:ecs:eu-west-1:715329755018:cluster/skynet",
-            "containers": [
-                {
-                "cpu": "16384",
-                "name": "engine",
-                "image": "715329755018.dkr.ecr.eu-west-1.amazonaws.com/engine:production-arm64",
-                "taskArn": "arn:aws:ecs:eu-west-1:715329755018:task/skynet/79994a95c0eb4e08966f6c99be2b27be",
-                "exitCode": 0,
-                "runtimeId": "75d34dde4dcd50f6e723e9291fc82344a38be4508011a6c86dafe835458f0e29",
-                "lastStatus": "STOPPED",
-                "imageDigest": "sha256:0484cbd1882a7894e99460626f8c8a1045ec042fe464ab6b6294f0b13fc0e8dd",
-                "containerArn": "arn:aws:ecs:eu-west-1:715329755018:container/skynet/79994a95c0eb4e08966f6c99be2b27be/f4b2c4c0-4b16-437c-a63d-fba10838f164",
-                "healthStatus": "UNKNOWN",
-                "networkBindings": [],
-                "memoryReservation": "16384",
-                "networkInterfaces": []
-                }
-            ],
-            "lastStatus": "STOPPED",
-            "launchType": "EC2",
-            "stoppingAt": "2025-04-21T08:53:13.754Z",
-            "attachments": [],
-            "connectivity": "CONNECTED",
-            "healthStatus": "UNKNOWN",
-            "desiredStatus": "STOPPED",
-            "pullStartedAt": "2025-04-21T08:25:20.296Z",
-            "pullStoppedAt": "2025-04-21T08:25:20.349Z",
-            "stoppedReason": "Essential container in task exited",
-            "connectivityAt": "2025-04-21T08:25:12.083Z",
-            "availabilityZone": "eu-west-1a",
-            "taskDefinitionArn": "arn:aws:ecs:eu-west-1:715329755018:task-definition/engine:51",
-            "executionStoppedAt": "2025-04-21T08:53:13.734Z",
-            "capacityProviderName": "skynet-ecs_provider",
-            "containerInstanceArn": "arn:aws:ecs:eu-west-1:715329755018:container-instance/skynet/cc140843b7e14a9398c2c6e637e86b93",
-            "enableExecuteCommand": False
-            }            
+        "game_id": "bab6ec2f-db53-4f7b-9031-e7d49f4738da"
     },
-        
-) as dag:
-    
-    activate_env_cmd  = f"cd {ENGINE_WORKING_DIR}/ECDO  && source ~/anaconda3/etc/profile.d/conda.sh && conda activate SD"
+    render_template_as_native_obj=True, # to get dict instead of string in xcom_pull
+    )
+def dag_engine():
 
-    prepare_environment = SSHOperator(
-        task_id='ssh_prepare_environment',
+    get_game_metadata = PythonOperator(
+        task_id="get_game_metadata",
+        python_callable=_get_game_metadata,
+        op_args=["{{params.game_id}}"],
+    )
+
+    parse_game_metadata = PythonOperator(
+        task_id="parse_game_metadata",
+        python_callable=_parse_game_metadata,
+        op_args=["{{ task_instance.xcom_pull(task_ids='get_game_metadata') }}"],
+    )
+
+    download_s3_input_files = SSHOperator(
+        task_id='ssh_download_s3_input_files',
         ssh_conn_id='ec2_ssh_conn',
-        command=activate_env_cmd + " && AWS_PROFILE=sd-production aws s3 cp s3://{{ params.game_metadata | fromjson['overrides']['containerOverrides'][0]['s3_bucket_name'] }}/{{ params.game_metadata | fromjson['overrides']['containerOverrides'][0]['s3_input_path'] }} " + ENGINE_INPUT_DATA_DIR + " --recursive",
-        conn_timeout=3600,
-        cmd_timeout=3600,
+        # TODO : get the folder (SaintEtienneLyon for bab6ec2f-db53-4f7b-9031-e7d49f4738da for example)
+        command=ACTIVATE_ENV_CMD  + 
+            " && AWS_PROFILE=sd-production aws s3 cp s3://" + S3_BUCKET + "/{{ti.xcom_pull(task_ids='parse_game_metadata')['customer_id']}}/{{ti.xcom_pull(task_ids='parse_game_metadata')['game_id']}}/input " + 
+            ENGINE_INPUT_DATA_DIR + "/{{ti.xcom_pull(task_ids='parse_game_metadata')['customer_name']}}/{{ti.xcom_pull(task_ids='parse_game_metadata')['game_name'] }} --recursive",
+        conn_timeout=600,
+        cmd_timeout=600,
     )
 
     run_pipeline = SSHOperator(
         task_id='ssh_run_pipeline',
         ssh_conn_id='ec2_ssh_conn',
-        command = activate_env_cmd + """ && python launcher.py \
-        --game_id {{ params.get_metadata['game_id'] }} \
-        --customer_id {{ params.get_metadata['customer_id'] }} \
-        --language {{ params.get_metadata['language'] }} \
-        --generate_dynamical_maps {{ params.get_metadata['generate_dynamical_maps'] }} \
-        --home_team_id {{ params.get_metadata['home_team_id'] }} \
-        --away_team_id {{ params.get_metadata['away_team_id'] }} \
-        --game_info_file {{ params.get_metadata['game_info_file'] }} \
-        --home_team_color_rgb {{ params.get_metadata['home_team_color_rgb'] }} \
-        --away_team_color_rgb {{ params.get_metadata['away_team_color_rgb'] }} \
-        --ball_color_rgb {{ params.get_metadata['ball_color_rgb'] }} \
-        --tracking_file  {{ params.get_metadata['tracking_file'] }} \
-        --event_file {{ params.get_metadata['event_file'] }} \
-        --retry {{ params.get_metadata['retry'] }} \
-    """,
+        command = "mkdir -p " + ENGINE_INPUT_DATA_DIR + "/{{ti.xcom_pull(task_ids='parse_game_metadata')['customer_name']}}/{{ti.xcom_pull(task_ids='parse_game_metadata')['game_name'] }}"
+        + " &&" + ACTIVATE_ENV_CMD + 
+        " && python launcher.py  {{ti.xcom_pull(task_ids='parse_game_metadata')['commandArgs']}}",
         conn_timeout=3600,
         cmd_timeout=3600,
     )
 
-    prepare_environment >> run_pipeline
+    get_game_metadata >> parse_game_metadata >>  download_s3_input_files >> run_pipeline
+
+
+# Run the DAG
+dag_engine()
