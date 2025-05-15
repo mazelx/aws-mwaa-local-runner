@@ -6,9 +6,24 @@ from airflow.utils.dates import days_ago
 from airflow.providers.http.sensors.http import HttpSensor
 from airflow.providers.http.operators.http import HttpOperator
 from airflow.operators.python import PythonOperator
+from airflow.providers.amazon.aws.operators.ecs import EcsRunTaskOperator
 
-
-
+# AWS ECS CONTEXT
+class ECSRunContext:
+    CLUSTER = 'ecs-cluster-for-airflow-dev'
+    TASK_DEFINITION = 'task-for-airflow-dev'
+    LAUNCH_TYPE = 'FARGATE'
+    PLATFORM_VERSION = 'LATEST'
+    NETWORK_CONFIGURATION = {
+        "awsvpcConfiguration": {
+            "subnets": ["subnet-d523538f", "subnet-3b616773", "subnet-e901368f"],
+            "securityGroups": ["sg-8a6114c8"],
+            "assignPublicIp": "ENABLED",
+        },
+    }
+    AWSLOGS_GROUP = "/ecs/task-for-airflow-dev"
+    AWSLOGS_STREAM_PREFIX = "ecs/task-container-for-airflow-dev"
+    AWSLOGS_REGION = "eu-west-1"
 
 # LOGGING
 logger = logging.getLogger(__name__)
@@ -61,9 +76,24 @@ def dag_engine_legacy_and_new():
         python_callable=lambda: logger.info("get_provider_input_files..."),
     )
 
-    run_data_prep = PythonOperator(
+    run_data_prep = EcsRunTaskOperator(
         task_id="run_data_prep",
-        python_callable=lambda: logger.info("run_data_prep..."),
+        cluster=ECSRunContext.CLUSTER,
+        task_definition=ECSRunContext.TASK_DEFINITION,
+        launch_type=ECSRunContext.LAUNCH_TYPE,
+        overrides={
+            "containerOverrides": [
+                {
+                    "name": "task-container-for-airflow-dev", # name of the container in the task definition
+                    "command": ["echo", "hello", "world"],
+                },
+            ],
+        },
+        platform_version = ECSRunContext.PLATFORM_VERSION,
+        network_configuration = ECSRunContext.NETWORK_CONFIGURATION,
+        awslogs_group = ECSRunContext.AWSLOGS_GROUP,
+        awslogs_stream_prefix = ECSRunContext.AWSLOGS_STREAM_PREFIX,
+        awslogs_region = ECSRunContext.AWSLOGS_REGION,
     )
 
     run_possession_detection = PythonOperator(
