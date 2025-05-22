@@ -1,8 +1,17 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from uuid import uuid4
 import random
 
 app = FastAPI()
+
+@app.post("/graphql")
+async def graphql_proxy(request: Request):
+    body = await request.body()
+    headers = request.headers
+    print(body)
+    print(headers)  
+    return body
+
 
 @app.get("/customer_games")
 def get_random_customer_games():
