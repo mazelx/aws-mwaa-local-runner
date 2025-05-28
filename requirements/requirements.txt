@@ -1,7 +1,9 @@
 --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.3/constraints-3.11.txt"
 
+apache-airflow-providers-amazon[aiobotocore]
 apache-airflow-providers-docker
 apache-airflow-providers-ssh
 apache-airflow-providers-http
 apache-airflow-providers-amazon
 astronomer-cosmos
+pytest

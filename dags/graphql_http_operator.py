@@ -3,11 +3,9 @@ from airflow.providers.http.hooks.http import HttpHook
 from airflow.hooks.base import BaseHook
 from typing import Dict, Optional, Callable
 
-import json
-
 class GraphQLHttpOperator(BaseOperator):
     """
-    Envoie une requête GraphQL POST en JSON avec les bons headers via HttpHook.
+    Sends a GraphQL POST request in JSON with proper headers via HttpHook.
     """
 
     template_fields = ("variables",)
@@ -21,6 +19,7 @@ class GraphQLHttpOperator(BaseOperator):
         headers: Optional[Dict[str, str]] = None,
         log_response: bool = True,
         keys_check: Optional[dict[str, type]] = None,
+        post_process: Optional[Callable] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -31,6 +30,7 @@ class GraphQLHttpOperator(BaseOperator):
         self.headers = headers or {}
         self.log_response = log_response
         self.keys_check = keys_check
+        self.post_process = post_process
 
     def execute(self, context):
         payload = {
@@ -38,10 +38,10 @@ class GraphQLHttpOperator(BaseOperator):
             "variables": self.variables
         }
 
-        self.log.info("📤 GraphQL payload envoyé :\n%s", json.dumps(payload, indent=2))
-        self.log.info("📤 Headers : %s", self.headers)
+        self.log.info("📤 GraphQL payload sent:\n%s", payload)
+        self.log.info("📤 Headers: %s", self.headers)
 
-        # Ajout/écrasement explicite du content-type
+        # Explicitly add/overwrite content-type
         conn = BaseHook.get_connection(self.http_conn_id)
         self.headers["Content-Type"] = "application/json"
         self.headers["x-sd-api-key"] = conn.password
@@ -55,17 +55,24 @@ class GraphQLHttpOperator(BaseOperator):
         )
 
         if self.log_response:
-            self.log.info("📥 Réponse GraphQL :\n%s", response.text)
+            self.log.info("📥 GraphQL response:\n%s", response.text)
 
-        # Vérification du contenu JSON si keys_check est fourni
+        # JSON content validation if keys_check is provided
         if self.keys_check is not None:
             try:
                 response_json = response.json()
             except Exception as e:
-                self.log.error("Erreur lors du décodage JSON: %s", e)
+                self.log.error("Error decoding JSON: %s", e)
                 raise
             if not self._validate_paths(response_json, self.keys_check):
-                raise ValueError("La vérification keys_check a échoué sur la réponse GraphQL.")
+                raise ValueError("keys_check validation failed on GraphQL response.")
+            
+        if self.post_process:
+            if callable(self.post_process):
+                return self.post_process(response.json())
+            else:
+                self.log.error("post_process should be a callable.")
+                raise ValueError("post_process should be a callable.")
         
         return response.json()
 
