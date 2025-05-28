@@ -7,3 +7,7 @@ dags/**/*.pyc
 .DS_Store
 plugins
 *__pycache__
+sandbox/
+.env/
+aws_mwaa_local_runner.egg-info/
+.vscode
