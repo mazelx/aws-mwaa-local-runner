@@ -11,3 +11,21 @@ sandbox/
 .env/
 aws_mwaa_local_runner.egg-info/
 .vscode
+
+# Sensitive configuration files
+profiles.yml
+**/profiles.yml
+.env*
+**/config/.env*
+
+# Additional sensitive files
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+
+# Temporary and cache files
+*.tmp
+*.cache
+.pytest_cache/
