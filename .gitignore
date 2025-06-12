@@ -10,7 +10,8 @@ plugins
 sandbox/
 .env/
 aws_mwaa_local_runner.egg-info/
-.vscode
+.vscode/
+.github/
 
 # Sensitive configuration files
 profiles.yml
