@@ -40,6 +40,7 @@ class AWSContext:
     AWSLOGS_STREAM_PREFIX = "engine/engine"
     AWSLOGS_REGION = "eu-west-1"
     BUCKET_NAME = "assets-20200803082231804400000001"
+    CAPACITY_PROVIDER = "skynet-ecs_provider"
 
 # LOGGING
 logger = logging.getLogger(__name__)
@@ -55,10 +56,9 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-
 # DAG DEFINITION
 @dag(
-    dag_id="engine_with_lambdas",
+    dag_id="customer_game_engine",
     default_args=default_args,
     description="Run Engine pipeline on EC2 instance",
     schedule_interval=None,  # ou None si lancement manuel
@@ -66,17 +66,29 @@ default_args = {
     catchup=False,
     tags=["pipeline", "ec2", "ssh"],
     params={
-        "game_id": "8186f8e5-a83e-4bc9-8449-5007172fc198",
+        "game_id": "2f76af02-25ca-4da1-b46d-1de006dc88e6",
         "command_args": [
             "--home_team_color_rgb",
             "[1,0,0]",
             "--away_team_color_rgb",
             "[0,0,1]",
+            "--generate_dynamical_maps",
+            "no",
+            "--ball_color_rgb",
+            "[1,0,0.984313725490196]",
+            "--tracking_file",
+            "tracking.jsonl",
+            "--event_file",
+            "insights.jsonl",
+            "--game_info_file",
+            "metadata.json",
+            "--retry",
+            "no"
         ],
     },
     render_template_as_native_obj=True,  # to get dict instead of string in xcom_pull
 )
-def engine_with_lambdas():
+def customer_game_engine():
     """Run Engine pipeline on AWS ECS with GraphQL API calls and S3 operations.
     This DAG fetches game metadata, waits for provider input files, creates a job request,
     retrieves customer metrics, and runs the engine on ECS.
@@ -91,18 +103,26 @@ def engine_with_lambdas():
         http_conn_id="sd_legacy_api_conn",
         endpoint="graphql",
         query="""query($id: ID!) {
-                game(id: $id) {
-                    id
-                    customer {
+                    game(id: $id) {
                         id
-                        name
-                        languageCode
+                        localClub {
+                            id
+                            brand
+                        }
+                        remoteClub {
+                            id
+                            brand
+                        }
+                        customer {
+                            id
+                            name
+                            languageCode
+                        }
+                        lastJobRequest {
+                            id
+                            state
+                        }
                     }
-                    lastJobRequest {
-                        id
-                        state
-                    }
-                }
             }""",
         variables="""{ "id": "{{ params.game_id}}" } """,
     )
@@ -120,14 +140,16 @@ def engine_with_lambdas():
     build_command_args = PythonOperator(
         task_id="build_command_args",
         python_callable=engine_helpers.build_command_args,
-        op_args=[
-            EngineContext.CMD,
-            AWSContext.BUCKET_NAME,
-            "{{ params.command_args }}",
-            "{{ ti.xcom_pull(task_ids='parse_game_metadata')['game_id'] }}",
-            "{{ ti.xcom_pull(task_ids='parse_game_metadata')['customer_id'] }}",
-            "{{ ti.xcom_pull(task_ids='parse_game_metadata')['assetStore'] }}",
-        ],
+        op_kwargs={
+            "command": EngineContext.CMD,
+            "bucket_name": AWSContext.BUCKET_NAME,
+            "command_args": "{{ params.command_args }}",
+            "game_id": "{{ ti.xcom_pull(task_ids='parse_game_metadata')['game_id'] }}",
+            "customer_id": "{{ ti.xcom_pull(task_ids='parse_game_metadata')['customer_id'] }}",
+            "assetStore": "{{ ti.xcom_pull(task_ids='parse_game_metadata')['assetStore'] }}",
+            "home_team_id": "{{ ti.xcom_pull(task_ids='parse_game_metadata')['home_team_id'] }}",
+            "away_team_id": "{{ ti.xcom_pull(task_ids='parse_game_metadata')['away_team_id'] }}",
+        }
     )
 
     # TODO : We should probably check for specific files instead of just checking for the existence of any file in the input directory.
@@ -199,7 +221,7 @@ def engine_with_lambdas():
             "customerId": "{{ ti.xcom_pull(task_ids='parse_game_metadata')['customer_id']}}",
             "language": "{{ ti.xcom_pull(task_ids='parse_game_metadata')['language']}}",
         },
-        post_process=engine_helpers.remove_disabled_metrics,
+        post_process=engine_helpers.clean_metrics_dict,
     )
 
     # Load customer metrics into S3 bucket
@@ -232,7 +254,6 @@ def engine_with_lambdas():
         },
     )
 
-    # TODO : replace the mocked operation with the real one
     # Run the engine on ECS using the EcsRunTaskOperator
     # Input : command arguments, game_id, customer_id
     # Output : ECS task execution
@@ -240,12 +261,12 @@ def engine_with_lambdas():
         task_id="run_data_prep",
         cluster=AWSContext.CLUSTER,
         task_definition=AWSContext.TASK_DEFINITION,
-        launch_type=AWSContext.LAUNCH_TYPE,
+        #launch_type=AWSContext.LAUNCH_TYPE, -- omitted when capacity_provider_strategy is used
         overrides={
             "containerOverrides": [
                 {
                     "name": AWSContext.CONTAINER_NAME,  # name of the container in the task definition
-                    "command": ["echo", "hello", "world"],
+                    "command": "{{ ti.xcom_pull(task_ids='build_command_args')}}",
                 },
             ],
         },
@@ -254,6 +275,10 @@ def engine_with_lambdas():
         awslogs_group=AWSContext.AWSLOGS_GROUP,
         awslogs_stream_prefix=AWSContext.AWSLOGS_STREAM_PREFIX,
         awslogs_region=AWSContext.AWSLOGS_REGION,
+        capacity_provider_strategy= [{ 
+            "capacityProvider": AWSContext.CAPACITY_PROVIDER,
+            "weight": 1,
+        }],
         # wait_for_completion=False,
         deferrable=True,
     )
@@ -272,7 +297,7 @@ def engine_with_lambdas():
                 }
             }""",
         variables={
-            "partialEntity": {"state": "FINISHED"},
+            "partialEntity": {"state": "STOPPED"},
             "id": "{{ ti.xcom_pull(task_ids='create_job_request')['data']['createJobRequestByGameId']['id'] }}",
         },
     )
@@ -291,4 +316,4 @@ def engine_with_lambdas():
     )
 
 
-engine_with_lambdas()
+customer_game_engine()
